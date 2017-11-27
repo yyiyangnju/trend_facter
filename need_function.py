@@ -1,130 +1,106 @@
-
-###################################################33 每一天的回归函数
-from sklearn.linear_model import LinearRegression
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import Formatter
+from sklearn.decomposition import PCA
+import statsmodels.api as sm
+
+def data_read(start_date=20060101, end_date=20170928):
+    """Only for data from WIND
+    return : raw data"""
+
+    data_df_fit_name = pd.read_csv('ashareeodprice20060101-20170928_v_full_members.csv')
+    data_df = pd.read_csv('ashareeodprice20060101-20170928.csv')
+
+     # store data
+    store = pd.HDFStore('data_201710_bliu.hd5')
+    store['data_df_fit_name'] = data_df_fit_name
+    store['data_df'] = data_df
+    store.close()
+
+     # read data
+    #store = pd.HDFStore('data_201710_bliu.hd5')
+    #data_df_fit_name = store['data_df_fit_name']
+    #data_df = store['data_df']
+    #store.close()
+
+    # clean data
+    data_df_fit_name.columns = ['trade_date', 'symbol']
+
+    # changed columns' name
+    data_df.rename(columns={'S_DQ_ADJCLOSE': 'close', 'S_INFO_WINDCODE': 'symbol', 'TRADE_DT': 'trade_date',
+                            'S_DQ_ADJOPEN': 'open'}, inplace=True)
+    cols_to_drop = ['S_DQ_VOLUME', 'S_DQ_ADJPRECLOSE', 'S_DQ_ADJHIGH', 'S_DQ_ADJLOW', 'S_DQ_ADJFACTOR', 'S_DQ_AMOUNT']
+    data_df.drop(cols_to_drop, axis=1, inplace=True)
+
+    # merge the two dataframe
+    data_df = pd.merge(data_df_fit_name, data_df, on=('trade_date', 'symbol'), how='inner')
+    return data_df
+
+#---------MA------------------------
+def roll_mean_price(df, ma_length=-1):
+    return df.rolling(window=ma_length).mean() / df
 
 
-def regress_one_row(ser, MA):
-
-    # argu:data for daily regression
-    time = ser.name
-
-    # 生成回归所需数据
-    df = ser.unstack(level=1)
-
-    # 除去空值
-    df1 = df.dropna(how='any')
-
-    # 字典更新
-    dic_data_record[time] = df1
-
-    y_df = df1.loc[:, 'ret']
-    x_df = df1.loc[:, MA]
-
-    if x_df.empty or y_df.empty:
-        return None
-
-    # 下面进行回归
-    LR = LinearRegression()
-    LR.fit(x_df, y_df)
-    res = np.insert(LR.coef_, len(MA), LR.intercept_)
-    rsq_arr.append(LR.score(x_df, y_df))
-    return res
-
-
-# 循环回归求得beta
-
-
-def cal_beta(comp_df_droped_reg, MA):
-
-    # argu :comp_df_droped_reg 为用于回归的dataframe，包含了所需的完整的数据
-    #       MA 用于表示columns
-    # return:beta
-    from collections import OrderedDict
-    reg_result = OrderedDict()
-    global dic_data_record
-    global rsq_arr
-    dic_data_record = OrderedDict()
-    rsq_arr = []  # record regression score
-    for Time, ser in comp_df_droped_reg.iterrows():
-        beta0 = regress_one_row(ser, MA)
-        if beta0 is None:
-            continue
-        reg_result[Time] = beta0  # reg_result 的 values 为 np.array
-    beta_arr = np.vstack(reg_result.values())  # beta的雏形：叠在一起的array
-    cols = ['beta_' + s for s in MA + ['const']]
-    beta = pd.DataFrame(index=reg_result.keys(), columns=cols, data=beta_arr)  #将雏形赋值给df得到最终的beta
-    return beta, dic_data_record, rsq_arr
-
-######################################################## 画图
-
-
-
-class MyFormatter(Formatter):
-    def __init__(self, dates, fmt='%Y%m'):
-        self.dates = dates
-        self.fmt = fmt
-
-    def __call__(self, x, pos=0):
-        """Return the label for time x at position pos"""
-        ind = int(np.round(x))
-        if ind >= len(self.dates) or ind < 0:
-            return ''
-
-        # return self.dates[ind].strftime(self.fmt)
-        return pd.to_datetime(self.dates[ind], format="%Y%m%d").strftime(self.fmt)
-
-
-def plot_ic(ic_df):
-
-    ic_arr = ic_df['ic'].values
-    ic_mean, ic_std = np.mean(ic_arr), np.std(ic_arr)
-
-    plt.figure(figsize=(16, 8), dpi=300)
-    plt.plot(ic_arr, lw=0.5, alpha=0.2, label='Daily IC')
-    plt.plot(ic_df['cumsum'].values, lw=1.2, alpha=1, color='red', label='Monthly Rolling Mean')
-    plt.axhline(ic_mean, color='k', ls='--', lw=1.2, label='Mean')
-    plt.axhline(ic_mean - 3 * ic_std, color='green', ls='--', lw=1.2, label='Mean - 3 Std')
-    plt.axhline(ic_mean + 3 * ic_std, color='green', ls='--', lw=1.2, label='Mean + 3 Std')
-
-    plt.gca().xaxis.set_major_formatter(MyFormatter(ic_df.index, '%Y-%m'))
-
-    plt.legend(loc='upper left')
-    plt.ylabel('IC Value')
-    plt.xlabel('Date')
-    plt.title("IC Time Series For Factor {}. Mean = {:.1f}%, Std = {:.1f}%".format(MA, ic_mean * 100, ic_std * 100))
-
-    plt.savefig('MA_IC.pdf')
-
-
-def cal_MA_ret(df, MA, L, frequency):
-
-    # 计算MA
-    # argu: df 提供原始数据的 dataframe
-    #      MA 需要计算的MA(str)
-    #      L  需要计算MA的int
-    # return:含有MA，ret,ret_IC，并且shift过的透视表
-    # 默认计算ret
-
-    df = df.sort_values('trade_date')
-    gp = df.groupby('symbol')['close']
-
+def ma_cal(df, MA):
+    gpb = df.groupby('symbol')['close']
     for i, ma_period in enumerate(MA):
-        temp = gp.rolling(L[i]).mean()
-        temp.index = temp.index.droplevel(level=0)
-        # temp.sort_index(inplace=True)
-        df.loc[:, ma_period] = temp / df['close']
+        ser_ma = gpb.apply(roll_mean_price, ma_length=int(ma_period[2:]))  ############
+        df.loc[:, ma_period] = ser_ma
+        print("{} calculation finished.".format(ma_period))
+    return df
 
-    gp = df.groupby('symbol')
-    df.loc[:, 'ret'] = gp['close'].pct_change(periods=frequency)  # .shift(-frequency)#这个没有shift，但是不明白为什么没有按照分组表示
-    df.loc[:, 'ret_IC'] = gp['opening'].pct_change(periods=frequency)
+# -----------------return-------------
+def ret_shift(df, period=1):
+    return df.pct_change(periods=period).shift(-period)
 
-    tmp = df.pivot(index='trade_date', columns='symbol')
-    comp = tmp.swaplevel(axis=1).sort_index(axis=1)
 
-    comp.loc[:, (slice(None), ['ret', 'ret_IC'])] = comp.loc[:, (slice(None), ['ret', 'ret_IC'])].shift(-frequency - 1)
-    return comp
-    # comp_df.loc[:,(slice(None),MA)] = comp_df.loc[:,(slice(None),MA)].shift(50)  ##检验未来函数
+def ret_cal(df, frequency):
+    gpb = df.groupby('symbol')['close']
+    df.loc[:, 'ret'] = gpb.apply(ret_shift, period=frequency)
+    # data_df.loc[:,'ret_IC'] = gp['opening'].pct_change(periods=frequency)
+    return df
+
+# -------------------regression data-----
+def reg_pre(df, MA):
+    cols_to_drop = list(set(df.columns) - set(MA + ['ret']))
+    data_reg = df.drop(cols_to_drop, axis=1)  # dataframe used for regression
+    print data_reg.shape
+
+    mask_to_drop = np.any(data_reg.isnull(), axis=1)
+    print("{:.1f}% of data are droped because of all NaN.".format(mask_to_drop.sum() * 100. / mask_to_drop.shape[0]))
+    data_reg = data_reg.loc[~mask_to_drop]
+    print data_reg.shape
+    return data_reg
+
+
+# -------------------collinearity----------
+def test_collinear(df, col):
+    return np.linalg.cond(df.loc[:,col])
+
+# -------------------PCA------------------
+def unify(df):
+    arr = df.values
+    return arr / np.linalg.norm(arr)
+
+
+def PCA_var_reg(df, ma_cols_names=MA, n=1, reg=False):
+    """
+    ma_cols_names: attributes
+    n: components
+    if reg == False then we just analyze
+    else we do the regression based on the result of decomposition
+    """
+
+    x = df.loc[:, ma_cols_names]
+    pca = PCA(n_components=n)
+    pca.fit(x)
+    if reg == False:
+        return pca.explained_variance_ratio_
+    else:
+        xr = pca.fit_transform(x)
+        yr = unify(df.ret)
+        # Let's regress
+        xr = sm.add_constant(xr)
+        model = sm.OLS(yr, xr)
+        fit_res = model.fit()
+        ser = fit_res.params.copy()  # coefficient
+        return ser,df
